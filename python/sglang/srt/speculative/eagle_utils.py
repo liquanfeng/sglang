@@ -104,6 +104,7 @@ class EagleDraftInput:
             batch.input_ids,
             batch.seq_lens,
             self.accept_length,
+            torch.cumsum(self.accept_length, axis=0, dtype=torch.int),
             self.positions,
             self.verified_id,
             next_power_of_2(speculative_num_steps + 1),
@@ -569,6 +570,7 @@ def create_extend_spec_info(
     verified_id,
     seq_lens,
     accept_lens,
+    accept_len_cum,
     positions,
     new_verified_id,
     accept_len_upper: tl.constexpr,
@@ -578,12 +580,12 @@ def create_extend_spec_info(
     seq_length = tl.load(seq_lens + pid)
     accept_length = tl.load(accept_lens + pid)
 
-    accept_len_cumsum = tl.sum(tl.load(accept_lens + offsets, mask=offsets < pid))
+    accept_len_cumsum = 0 if pid == 0 else tl.load(accept_len_cum + pid - 1)
     positions_ptr = positions + accept_len_cumsum
     mask = offsets < accept_length
     tl.store(positions_ptr + offsets, seq_length - accept_length + offsets, mask)
 
-    accept_len_cumsum = accept_len_cumsum + accept_length - 1
+    accept_len_cumsum = tl.load(accept_len_cum + pid) - 1
     verified_id_data = tl.load(verified_id + accept_len_cumsum)
     tl.store(new_verified_id + pid, verified_id_data)
 
