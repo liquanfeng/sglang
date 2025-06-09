@@ -22,7 +22,7 @@ from sglang.srt.managers.schedule_batch import (
     global_server_args_dict,
 )
 from sglang.srt.mem_cache.memory_pool import TokenToKVPoolAllocator
-from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
+from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, ForwardMode
 from sglang.srt.speculative.build_eagle_tree import build_tree_kernel_efficient
 from sglang.srt.utils import fast_topk, is_cuda, is_hip, next_power_of_2
 
@@ -89,68 +89,42 @@ class EagleDraftInput:
         context_length: int,
         pad_input: bool,
     ):
+        batch.forward_mode = ForwardMode.DRAFT_EXTEND
+        batch.input_ids = self.verified_id
         batch.extend_lens = [x + 1 for x in batch.spec_info.accept_length_cpu]
         batch.extend_num_tokens = sum(batch.extend_lens)
         batch.seq_lens = batch.spec_info.seq_lens_for_draft_extend
         batch.req_pool_indices = batch.spec_info.req_pool_indices_for_draft_extend
+        batch.return_logprob = False
 
-        self.positions = torch.empty_like(self.verified_id, dtype=torch.long)
-        new_verified_id = torch.empty_like(self.accept_length, dtype=torch.int32)
+        self.capture_hidden_mode = CaptureHiddenMode.LAST
         self.accept_length.add_(1)
+        self.positions = torch.empty_like(batch.input_ids, dtype=torch.long)
+        self.verified_id = torch.empty_like(self.accept_length, dtype=torch.int32)
 
         create_extend_spec_info[(self.accept_length.numel(),)](
-            self.verified_id,
+            batch.input_ids,
             batch.seq_lens,
             self.accept_length,
             self.positions,
-            new_verified_id,
+            self.verified_id,
             next_power_of_2(speculative_num_steps + 1),
         )
-        batch.seq_lens_sum = batch.seq_lens.sum().item()
-        batch.input_ids = self.verified_id
-        self.verified_id = new_verified_id
 
         if not pad_input:
             return
 
+        # TODO(lianmin): remove this
         batch_size = sum(not req.finished() for req in batch.reqs)
         static_len = speculative_num_steps + 1
-        padded_input_size = batch_size * static_len
-
-        padded_len = padded_input_size - batch.input_ids.shape[0]
+        padded_len = batch_size * static_len - batch.input_ids.shape[0]
         if padded_len > 0:
-            new_input_ids = torch.nn.functional.pad(
-                batch.input_ids, (0, padded_len), value=0
+            batch.input_ids = F.pad(batch.input_ids, (0, padded_len), value=0)
+            batch.out_cache_loc = F.pad(batch.out_cache_loc, (0, padded_len), value=0)
+            self.positions = F.pad(self.positions, (0, padded_len), value=0)
+            self.hidden_states = F.pad(
+                self.hidden_states, (0, 0, 0, padded_len), value=0
             )
-            position_padding = torch.arange(padded_len, device=self.positions.device)
-            new_positions = torch.cat([self.positions, position_padding])
-
-            # need dummy hidden states for the padded positions
-            hidden_states_dim = self.hidden_states.shape[-1]
-            new_hidden_states = torch.cat(
-                [
-                    self.hidden_states,
-                    torch.zeros(
-                        (padded_len, hidden_states_dim),
-                        dtype=self.hidden_states.dtype,
-                        device=self.hidden_states.device,
-                    ),
-                ],
-                dim=0,
-            )
-
-            # allocate KV cache location for the padded tokens
-            padded_cache_loc = torch.zeros(
-                padded_len,
-                dtype=batch.out_cache_loc.dtype,
-                device=batch.out_cache_loc.device,
-            )
-            new_out_cache_loc = torch.cat([batch.out_cache_loc, padded_cache_loc])
-
-            batch.input_ids = new_input_ids
-            self.hidden_states = new_hidden_states
-            self.positions = new_positions
-            batch.out_cache_loc = new_out_cache_loc
 
     def generate_attn_arg_prefill(
         self,

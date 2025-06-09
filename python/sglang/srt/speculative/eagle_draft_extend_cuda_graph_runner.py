@@ -11,6 +11,7 @@ from sglang.srt.model_executor.cuda_graph_runner import (
     LogitsProcessorOutput,
     get_batch_sizes_to_capture,
     get_global_graph_memory_pool,
+    model_capture_mode,
     set_global_graph_memory_pool,
     set_torch_compile_config,
 )
@@ -87,7 +88,8 @@ class EAGLEDraftExtendCudaGraphRunner:
 
         # Capture
         try:
-            self.capture()
+            with model_capture_mode():
+                self.capture()
         except RuntimeError as e:
             raise Exception(
                 f"Capture cuda graph failed: {e}\n{CUDA_GRAPH_CAPTURE_FAILED_MSG}"

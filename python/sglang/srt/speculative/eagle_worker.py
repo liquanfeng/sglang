@@ -683,19 +683,20 @@ class EAGLEWorker(TpModelWorker):
         return_logprob_backup = batch.return_logprob
 
         # Prepare metadata
-        batch.forward_mode = ForwardMode.DRAFT_EXTEND
         batch.spec_info.prepare_extend_after_decode(
             batch,
             self.speculative_num_steps,
             self.server_args.context_length,
             pad_input=self.cuda_graph_runner_for_draft_extend is not None,
         )
-        batch.spec_info.capture_hidden_mode = CaptureHiddenMode.LAST
-        batch.return_logprob = False
         model_worker_batch = batch.get_model_worker_batch()
         forward_batch = ForwardBatch.init_new(
             model_worker_batch, self.draft_model_runner
         )
+        if forward_batch.seq_lens_cpu is not None:
+            forward_batch.seq_lens_sum = forward_batch.seq_lens_cpu.sum().item()
+        else:
+            forward_batch.seq_lens_sum = batch.seq_lens.sum().item()
 
         # Run
         can_cuda_graph = (
