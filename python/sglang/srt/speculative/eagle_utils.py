@@ -87,14 +87,12 @@ class EagleDraftInput:
         batch: ScheduleBatch,
         speculative_num_steps: int,
         context_length: int,
-        pad_input: bool = False,
+        pad_input: bool,
     ):
-        accept_length_cpu = batch.spec_info.accept_length_cpu
-        batch.extend_lens = [x + 1 for x in accept_length_cpu]
+        batch.extend_lens = [x + 1 for x in batch.spec_info.accept_length_cpu]
         batch.extend_num_tokens = sum(batch.extend_lens)
         batch.seq_lens = batch.spec_info.seq_lens_for_draft_extend
         batch.req_pool_indices = batch.spec_info.req_pool_indices_for_draft_extend
-        seq_lens_cpu = batch.seq_lens.tolist()
 
         self.positions = torch.empty_like(self.verified_id, dtype=torch.long)
         new_verified_id = torch.empty_like(self.accept_length, dtype=torch.int32)
@@ -104,13 +102,11 @@ class EagleDraftInput:
             self.verified_id,
             batch.seq_lens,
             self.accept_length,
-            torch.cumsum(self.accept_length, axis=0, dtype=torch.int),
             self.positions,
             new_verified_id,
             next_power_of_2(speculative_num_steps + 1),
         )
-
-        batch.seq_lens_sum = sum(seq_lens_cpu)
+        batch.seq_lens_sum = batch.seq_lens.sum().item()
         batch.input_ids = self.verified_id
         self.verified_id = new_verified_id
 
@@ -118,9 +114,7 @@ class EagleDraftInput:
             return
 
         batch_size = sum(not req.finished() for req in batch.reqs)
-        # Total constant input length after padding
         static_len = speculative_num_steps + 1
-        # Total size after padding
         padded_input_size = batch_size * static_len
 
         padded_len = padded_input_size - batch.input_ids.shape[0]
@@ -616,24 +610,25 @@ class EagleVerifyInput:
 @triton.jit
 def create_extend_spec_info(
     verified_id,
-    seq_len,
-    accept_len,
-    accept_len_cum,
+    seq_lens,
+    accept_lens,
     positions,
     new_verified_id,
     accept_len_upper: tl.constexpr,
 ):
     pid = tl.program_id(axis=0)
-    offset = 0 if pid == 0 else tl.load(accept_len_cum + pid - 1)
-    seq_length = tl.load(seq_len + pid)
-    accept_length = tl.load(accept_len + pid)
-    positions_ptr = positions + offset
+    offsets = tl.arange(0, accept_len_upper)
+    seq_length = tl.load(seq_lens + pid)
+    accept_length = tl.load(accept_lens + pid)
+
+    accept_len_cumsum = tl.sum(tl.load(accept_lens + offsets, mask=offsets < pid))
+    positions_ptr = positions + accept_len_cumsum
     data = tl.arange(0, accept_len_upper)
     mask = data < accept_length
     tl.store(positions_ptr + data, seq_length - accept_length + data, mask)
 
-    offset = tl.load(accept_len_cum + pid) - 1
-    verified_id_data = tl.load(verified_id + offset)
+    accept_len_cumsum = accept_len_cumsum + accept_length - 1
+    verified_id_data = tl.load(verified_id + accept_len_cumsum)
     tl.store(new_verified_id + pid, verified_id_data)
 
 
