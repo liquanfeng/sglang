@@ -69,7 +69,6 @@ class EAGLEWorker(TpModelWorker):
         self.server_args = server_args
         self.topk = server_args.speculative_eagle_topk
         self.speculative_num_steps = server_args.speculative_num_steps
-        self.padded_static_len = self.speculative_num_steps + 1
         self.enable_nan_detection = server_args.enable_nan_detection
         self.gpu_id = gpu_id
         self.device = server_args.device
@@ -78,6 +77,7 @@ class EAGLEWorker(TpModelWorker):
         self.speculative_algorithm = SpeculativeAlgorithm.from_string(
             server_args.speculative_algorithm
         )
+        self.padded_static_len = -1
 
         # Override context length with target model's context length
         server_args.context_length = target_worker.model_runner.model_config.context_len
@@ -184,7 +184,6 @@ class EAGLEWorker(TpModelWorker):
                     self.draft_model_runner,
                     skip_prefill=False,
                 )
-            self.padded_static_len = self.speculative_num_steps + 1
             self.has_prefill_wrapper_verify = True
         elif self.server_args.attention_backend == "triton":
             from sglang.srt.layers.attention.triton_backend import (
@@ -201,7 +200,6 @@ class EAGLEWorker(TpModelWorker):
                 self.draft_model_runner,
                 skip_prefill=False,
             )
-            self.padded_static_len = self.speculative_num_steps + 1
             self.has_prefill_wrapper_verify = False
         elif self.server_args.attention_backend == "fa3":
             from sglang.srt.layers.attention.flashattention_backend import (
@@ -218,7 +216,6 @@ class EAGLEWorker(TpModelWorker):
                 self.draft_model_runner,
                 skip_prefill=False,
             )
-            self.padded_static_len = self.speculative_num_steps + 1
             self.has_prefill_wrapper_verify = False
         elif self.server_args.attention_backend == "flashmla":
             from sglang.srt.layers.attention.flashmla_backend import (
@@ -231,7 +228,6 @@ class EAGLEWorker(TpModelWorker):
                 self.speculative_num_steps,
             )
             self.draft_extend_attn_backend = None
-            self.padded_static_len = self.speculative_num_steps + 1
             self.has_prefill_wrapper_verify = False
         else:
             raise ValueError(
