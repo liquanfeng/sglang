@@ -682,8 +682,6 @@ class EAGLEWorker(TpModelWorker):
         batch.spec_info.prepare_extend_after_decode(
             batch,
             self.speculative_num_steps,
-            self.server_args.context_length,
-            pad_input=self.cuda_graph_runner_for_draft_extend is not None,
         )
         model_worker_batch = batch.get_model_worker_batch()
         forward_batch = ForwardBatch.init_new(

@@ -86,8 +86,6 @@ class EagleDraftInput:
         self,
         batch: ScheduleBatch,
         speculative_num_steps: int,
-        context_length: int,
-        pad_input: bool,
     ):
         batch.forward_mode = ForwardMode.DRAFT_EXTEND
         batch.input_ids = self.verified_id
