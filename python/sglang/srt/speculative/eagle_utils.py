@@ -111,21 +111,6 @@ class EagleDraftInput:
             next_power_of_2(speculative_num_steps + 1),
         )
 
-        if not pad_input:
-            return
-
-        # TODO(lianmin): remove this
-        batch_size = sum(not req.finished() for req in batch.reqs)
-        static_len = speculative_num_steps + 1
-        padded_len = batch_size * static_len - batch.input_ids.shape[0]
-        if padded_len > 0:
-            batch.input_ids = F.pad(batch.input_ids, (0, padded_len), value=0)
-            batch.out_cache_loc = F.pad(batch.out_cache_loc, (0, padded_len), value=0)
-            self.positions = F.pad(self.positions, (0, padded_len), value=0)
-            self.hidden_states = F.pad(
-                self.hidden_states, (0, 0, 0, padded_len), value=0
-            )
-
     def generate_attn_arg_prefill(
         self,
         req_pool_indices: torch.Tensor,
@@ -597,9 +582,8 @@ def create_extend_spec_info(
 
     accept_len_cumsum = tl.sum(tl.load(accept_lens + offsets, mask=offsets < pid))
     positions_ptr = positions + accept_len_cumsum
-    data = tl.arange(0, accept_len_upper)
-    mask = data < accept_length
-    tl.store(positions_ptr + data, seq_length - accept_length + data, mask)
+    mask = offsets < accept_length
+    tl.store(positions_ptr + offsets, seq_length - accept_length + offsets, mask)
 
     accept_len_cumsum = accept_len_cumsum + accept_length - 1
     verified_id_data = tl.load(verified_id + accept_len_cumsum)
