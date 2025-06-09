@@ -100,14 +100,13 @@ class EagleDraftInput:
         self.positions = torch.empty_like(batch.input_ids, dtype=torch.long)
         self.verified_id = torch.empty_like(self.accept_length, dtype=torch.int32)
 
-        create_extend_spec_info[(self.accept_length.numel(),)](
+        create_extend_spec_info[(len(batch.seq_lens),)](
             batch.input_ids,
             batch.seq_lens,
             self.accept_length,
-            torch.cumsum(self.accept_length, axis=0, dtype=torch.int),
             self.positions,
             self.verified_id,
-            next_power_of_2(speculative_num_steps + 1),
+            next_power_of_2(max(speculative_num_steps + 1, len(batch.seq_lens))),
         )
 
     def generate_attn_arg_prefill(
@@ -570,22 +569,23 @@ def create_extend_spec_info(
     verified_id,
     seq_lens,
     accept_lens,
-    accept_len_cum,
     positions,
     new_verified_id,
-    accept_len_upper: tl.constexpr,
+    bs_upper: tl.constexpr,
 ):
     pid = tl.program_id(axis=0)
-    offsets = tl.arange(0, accept_len_upper)
+    offsets = tl.arange(0, bs_upper)
     seq_length = tl.load(seq_lens + pid)
     accept_length = tl.load(accept_lens + pid)
 
-    accept_len_cumsum = 0 if pid == 0 else tl.load(accept_len_cum + pid - 1)
+    accept_len_cumsum = tl.sum(
+        tl.load(accept_lens + offsets, mask=offsets < pid, other=0)
+    )
     positions_ptr = positions + accept_len_cumsum
     mask = offsets < accept_length
     tl.store(positions_ptr + offsets, seq_length - accept_length + offsets, mask)
 
-    accept_len_cumsum = tl.load(accept_len_cum + pid) - 1
+    accept_len_cumsum += accept_length - 1
     verified_id_data = tl.load(verified_id + accept_len_cumsum)
     tl.store(new_verified_id + pid, verified_id_data)
 
@@ -607,8 +607,8 @@ def assign_req_to_token_pool(
     token_pool = req_to_token + tl.load(req_pool_indices + pid) * pool_len
 
     length_offset = tl.arange(0, bs_upper)
-    start = tl.load(start_offset + length_offset, mask=length_offset < pid)
-    end = tl.load(end_offset + length_offset, mask=length_offset < pid)
+    start = tl.load(start_offset + length_offset, mask=length_offset < pid, other=0)
+    end = tl.load(end_offset + length_offset, mask=length_offset < pid, other=0)
     out_offset = tl.sum(end - start, axis=0)
 
     out_cache_ptr = out_cache_loc + out_offset
@@ -689,7 +689,7 @@ def generate_draft_decode_kv_indices(
     iters += 1
 
     load_offset = tl.arange(0, bs_upper)
-    seq_lens = tl.load(paged_kernel_lens + load_offset, mask=load_offset < bid)
+    seq_lens = tl.load(paged_kernel_lens + load_offset, mask=load_offset < bid, other=0)
     seq_len = tl.load(paged_kernel_lens + bid)
     cum_seq_len = tl.sum(seq_lens)
 
@@ -718,7 +718,7 @@ def generate_draft_decode_kv_indices(
     zid = bid * topk + topk_id
     if zid == 0:
         zid = num_seqs * topk
-    positions = tl.load(positions + bs_offset, mask=bs_offset < zid)
+    positions = tl.load(positions + bs_offset, mask=bs_offset < zid, other=0)
     base = tl.sum(positions)
     tl.store(kv_indptr + zid, base + zid * iters)
 
@@ -736,7 +736,9 @@ def align_evict_mask_to_page_size(
     bid = tl.program_id(axis=0)
     seq_len = tl.load(seq_lens + bid)
     io_mask = t_range < num_draft_tokens
-    mask_row = tl.load(evict_mask + bid * num_draft_tokens + t_range, mask=io_mask)
+    mask_row = tl.load(
+        evict_mask + bid * num_draft_tokens + t_range, mask=io_mask, other=0
+    )
 
     num_trues = tl.sum(mask_row)
     num_false = num_draft_tokens - num_trues
